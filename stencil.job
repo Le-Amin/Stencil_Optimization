@@ -2,7 +2,7 @@
 # Benchmark du stencil optimisé sur ROMEO (1 nœud complet, OpenMP).
 #
 # Soumission :   sbatch stencil.job
-# À adapter si besoin : partition / compte / modules (voir la doc ROMEO).
+# Réglé pour ROMEO 2025 (nœuds x64cpu, 2 x AMD EPYC 9654). --mem est obligatoire.
 
 #SBATCH --nodes 1
 #SBATCH --ntasks-per-node 1
@@ -10,13 +10,14 @@
 #SBATCH --time 00:30:00
 #SBATCH --output stencil.out
 #SBATCH --exclusive
-##SBATCH --partition <partition>
-##SBATCH --account <projet>
-##SBATCH --constraint <x64cpu|armgpu ...>
+#SBATCH --mem 64G
+#SBATCH --partition instant
+#SBATCH --account r250127
+#SBATCH --constraint x64cpu
 
-# module purge
-# module load gcc          # compilateur récent avec OpenMP
-# module load python       # python3 pour check.py
+. /apps/2025/manual_install/spack-x64cpu-1.0.x/share/spack/setup-env.sh
+spack load gcc@14.2.0
+# python3 système (/usr/bin/python3) suffit pour check.py
 
 set -e
 
