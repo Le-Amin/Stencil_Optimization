@@ -35,6 +35,43 @@ Pour comparaison, le code d'origine compilé en `-O3` met 77,5 s sur
 4096 × 4096 au lieu de 179 s. Le compilateur seul ne corrige donc pas le
 problème principal, qui est l'ordre des boucles.
 
+## Résultats sur ROMEO (nœud x64cpu : 2 × AMD EPYC 9654, 192 cœurs, 8 nœuds NUMA)
+
+Compilé avec gcc 14.2.0 (`-O3 -march=native -mprefer-vector-width=512 -fopenmp`),
+192 threads OpenMP (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), T choisi
+automatiquement.
+
+| Problème          | T | Temps optimisé | check.py |
+| ----------------- | -: | -------------: | -------- |
+| 1024 × 1024 × 100 | 1 | 0,024 s | OK (écart max 1) |
+| 4096 × 4096 × 100 | 2 | 0,024 s | OK (écart max 1) |
+| 8000 × 8000 × 100 | 5 | 0,040 s | OK (écart max 1) |
+
+Le code d'origine met 3,87 s sur 1024 × 1024 × 100 (1 cœur), soit un gain
+d'environ ×163 sur cette taille. Sur 1024², il y a trop peu de travail pour
+192 threads : le temps est dominé par les barrières et le lancement des
+threads.
+
+Passage à l'échelle sur 8000 × 8000 × 100 (`scaling.job`, temps en secondes) :
+
+| threads | T=16  | T=32  | T=64  |
+| ------: | ----: | ----: | ----: |
+| 1       | 2,241 | 2,296 | 2,861 |
+| 2       | 1,142 | 1,151 | 1,420 |
+| 4       | 0,584 | 0,590 | 0,736 |
+| 8       | 0,305 | 0,305 | 0,388 |
+| 16      | 0,165 | 0,162 | 0,208 |
+| 32      | 0,096 | 0,090 | 0,116 |
+| 64      | 0,054 | 0,054 | 0,073 |
+| 128     | 0,064 | 0,063 | 0,078 |
+| 192     | 0,060 | 0,061 | 0,082 |
+
+L'accélération est presque linéaire jusqu'à 64 threads (×41). Au-delà, avec
+T forcé à 16 ou plus, les blocs de colonnes deviennent trop étroits : environ
+40 colonnes par thread à 192 threads, donc le calcul redondant des bords
+l'emporte. Avec le réglage automatique (T=5 à 192 threads), on obtient le
+meilleur temps : 0,040 s.
+
 ## Optimisations appliquées
 
 1. **Accès mémoire contigus.** Le tableau est stocké `image[j + i*height]`,
@@ -96,9 +133,11 @@ sbatch scaling.job    # passage à l'échelle 1, 2, 4, ... threads -> scaling.ou
 
 Les scripts compilent sur le nœud de calcul, pour que `-march=native` cible le
 bon processeur. Ils utilisent tous les cœurs du nœud avec
-`OMP_PROC_BIND=close` et `OMP_PLACES=cores`. Il faudra sans doute décommenter
-et adapter les lignes `--partition`, `--account` et `module load` selon votre
-compte ROMEO.
+`OMP_PROC_BIND=close` et `OMP_PLACES=cores`. Ils sont réglés pour ROMEO 2025 :
+partition `instant`, contrainte `x64cpu`, `--mem 64G` (obligatoire), et gcc
+14.2.0 chargé via spack. Le compte `r250127` est à changer si besoin. Les deux
+scripts font `make clean` dans le même dossier : lancez `scaling.job` après
+`stencil.job`, par exemple avec `sbatch --dependency=afterany:<id> scaling.job`.
 
 ## Réglages (variables d'environnement)
 
