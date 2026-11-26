@@ -38,39 +38,52 @@ problème principal, qui est l'ordre des boucles.
 ## Résultats sur ROMEO (nœud x64cpu : 2 × AMD EPYC 9654, 192 cœurs, 8 nœuds NUMA)
 
 Compilé avec gcc 14.2.0 (`-O3 -march=native -mprefer-vector-width=512 -fopenmp`),
-192 threads OpenMP (`OMP_PROC_BIND=close`, `OMP_PLACES=cores`), T choisi
-automatiquement.
+avec `OMP_PROC_BIND=close` et `OMP_PLACES=cores`. Ces résultats viennent de
+`compare.job` : le code d'origine est compilé comme dans le Makefile initial
+(`gcc -std=c99`) et tourne sur 1 cœur, et l'on garde le meilleur temps de 5
+exécutions de la version optimisée.
 
-| Problème          | T | Temps optimisé | check.py |
-| ----------------- | -: | -------------: | -------- |
-| 1024 × 1024 × 100 | 1 | 0,024 s | OK (écart max 1) |
-| 4096 × 4096 × 100 | 2 | 0,024 s | OK (écart max 1) |
-| 8000 × 8000 × 100 | 5 | 0,040 s | OK (écart max 1) |
+### Comparatif : version d'origine vs version optimisée
 
-Le code d'origine met 3,87 s sur 1024 × 1024 × 100 (1 cœur), soit un gain
-d'environ ×163 sur cette taille. Sur 1024², il y a trop peu de travail pour
-192 threads : le temps est dominé par les barrières et le lancement des
-threads.
+| Problème          | Original, 1 cœur | Optimisé, 192 threads | Accélération | check.py |
+| ----------------- | ---------------: | --------------------: | -----------: | -------- |
+| 1024 × 1024 × 100 |          3,858 s |              0,0073 s |       × 527  | OK (écart max 1) |
+| 4096 × 4096 × 100 |         80,152 s |              0,0259 s |      × 3 100 | OK (écart max 1) |
+| 8000 × 8000 × 100 |        186,685 s |              0,0321 s |      × 5 819 | OK (écart max 1) |
 
-Passage à l'échelle sur 8000 × 8000 × 100 (`scaling.job`, temps en secondes) :
+Réglages choisis automatiquement : découpage 12 × 16 blocs, T = 32 (T = 8 pour
+1024), BJ = 1343.
 
-| threads | T=16  | T=32  | T=64  |
-| ------: | ----: | ----: | ----: |
-| 1       | 2,241 | 2,296 | 2,861 |
-| 2       | 1,142 | 1,151 | 1,420 |
-| 4       | 0,584 | 0,590 | 0,736 |
-| 8       | 0,305 | 0,305 | 0,388 |
-| 16      | 0,165 | 0,162 | 0,208 |
-| 32      | 0,096 | 0,090 | 0,116 |
-| 64      | 0,054 | 0,054 | 0,073 |
-| 128     | 0,064 | 0,063 | 0,078 |
-| 192     | 0,060 | 0,061 | 0,082 |
+Le code d'origine est anormalement lent sur 4096 : 21 fois le temps de 1024
+pour 16 fois plus de points. C'est probablement dû au pas d'accès de
+4096 × 8 octets, une puissance de 2 qui fait tomber les accès sur les mêmes
+ensembles du cache. La version optimisée n'a pas ce problème, car elle lit la
+mémoire de façon contiguë.
 
-L'accélération est presque linéaire jusqu'à 64 threads (×41). Au-delà, avec
-T forcé à 16 ou plus, les blocs de colonnes deviennent trop étroits : environ
-40 colonnes par thread à 192 threads, donc le calcul redondant des bords
-l'emporte. Avec le réglage automatique (T=5 à 192 threads), on obtient le
-meilleur temps : 0,040 s.
+### Passage à l'échelle sur 8000 × 8000 × 100 (`scaling.job`, en secondes)
+
+| threads (découpage) | T auto | T=16  | T=32  |
+| ------------------: | -----: | ----: | ----: |
+| 1 (1×1)             | 2,261  | 2,242 | 2,260 |
+| 2 (1×2)             | 1,135  | 1,155 | 1,138 |
+| 4 (2×2)             | 0,579  | 0,587 | 0,576 |
+| 8 (2×4)             | 0,309  | 0,302 | 0,309 |
+| 16 (4×4)            | 0,162  | 0,160 | 0,161 |
+| 32 (4×8)            | 0,085  | 0,108 | 0,085 |
+| 64 (8×8)            | 0,047  | 0,059 | 0,047 |
+| 96 (8×12)           | 0,041  | 0,066 | 0,041 |
+| 128 (8×16)          | 0,033  | 0,057 | 0,052 |
+| 192 (12×16)         | 0,029 à 0,050 | 0,053 | 0,049 |
+
+L'accélération est quasi linéaire jusqu'à 64 threads (× 48), et le temps
+continue de baisser jusqu'à 128 threads. À 192 threads, un calcul complet ne
+dure plus que 30 à 50 ms. On est alors limité par la bande passante mémoire et
+les barrières, et le temps varie d'une exécution à l'autre.
+
+Le découpage 2D (blocs de colonnes × blocs de lignes) permet de garder T = 32
+même avec 192 threads. Avec l'ancien découpage en colonnes seulement, il
+fallait descendre à T = 5 : sur 8000², le temps est passé de 0,040 s avec le
+découpage 1D à environ 0,030 s.
 
 ## Optimisations appliquées
 
@@ -96,8 +109,9 @@ meilleur temps : 0,040 s.
 6. **Blocage spatial en j.** Les colonnes sont découpées en bandes de BJ lignes,
    avec un halo de T lignes recalculé, pour que l'anneau tienne dans la moitié
    du cache L2. BJ est calculé automatiquement à partir de la taille du L2.
-7. **OpenMP.** Chaque thread traite un bloc contigu de colonnes. Les T colonnes
-   de chaque bord sont recalculées de façon redondante, si bien qu'aucune
+7. **OpenMP, découpage 2D.** La grille est découpée en px × py blocs
+   (colonnes × lignes, les plus carrés possible), un par thread. Les T
+   colonnes ou lignes de chaque bord sont recalculées de façon redondante, si bien qu'aucune
    synchronisation n'est nécessaire pendant un passage : il n'y a qu'une
    barrière tous les T balayages. L'initialisation est elle aussi parallèle
    (« first touch »), pour que les pages mémoire soient placées sur le nœud
@@ -128,6 +142,7 @@ Autres cibles : `make double` (double précision), `make serial` (sans OpenMP),
 
 ```bash
 sbatch stencil.job    # 3 tailles + vérification + original 1024 -> stencil.out
+sbatch compare.job    # comparatif original vs optimisé, 3 tailles -> compare.out
 sbatch scaling.job    # passage à l'échelle 1, 2, 4, ... threads -> scaling.out
 ```
 
@@ -135,9 +150,9 @@ Les scripts compilent sur le nœud de calcul, pour que `-march=native` cible le
 bon processeur. Ils utilisent tous les cœurs du nœud avec
 `OMP_PROC_BIND=close` et `OMP_PLACES=cores`. Ils sont réglés pour ROMEO 2025 :
 partition `instant`, contrainte `x64cpu`, `--mem 64G` (obligatoire), et gcc
-14.2.0 chargé via spack. Le compte `r250127` est à changer si besoin. Les deux
-scripts font `make clean` dans le même dossier : lancez `scaling.job` après
-`stencil.job`, par exemple avec `sbatch --dependency=afterany:<id> scaling.job`.
+14.2.0 chargé via spack. Le compte `r250127` est à changer si besoin. Les
+scripts font tous `make clean` dans le même dossier : ne les lancez pas en
+même temps, par exemple `sbatch --dependency=afterany:<id> scaling.job`.
 
 ## Réglages (variables d'environnement)
 
@@ -147,9 +162,10 @@ scripts font `make clean` dans le même dossier : lancez `scaling.job` après
 | `STENCIL_T`       | balayages fusionnés par passage (1 = pas de blocage)    | 32 (réduit si peu de colonnes par thread) |
 | `STENCIL_BJ`      | hauteur des bandes en j                                 | calculée d'après le L2 |
 | `STENCIL_L2`      | taille du L2 en octets, si la détection échoue          | `sysconf`, sinon 512 Kio |
+| `STENCIL_PX`      | nombre de blocs de colonnes (doit diviser le nombre de threads) | automatique |
 
 Le programme affiche sur stderr la configuration utilisée, par exemple
-`threads=4 T=32 BJ=2752 precision=float`.
+`threads=4 (2x2) T=32 BJ=2752 precision=float`.
 
 ## Vérifier les résultats
 
