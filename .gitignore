@@ -1,0 +1,9 @@
+stencil
+stencil_double
+stencil_serial
+stencil_original
+st512
+stencil.pgm
+*.out
+*.o
+run_orig_*/

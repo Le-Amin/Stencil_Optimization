@@ -1,67 +1,74 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
+"""Compare une image stencil.pgm à l'image de référence (tolérance +/- 1).
 
-import sys
+Compatible Python 3 (et Python 2.7)."""
+
 import argparse
+import sys
 
-# Intermediate class to parse arguments
-class InputParser(argparse.ArgumentParser):
-    def __init__(self):
-        super(InputParser, self).__init__(
-            description="Testing script for HPC Stencil coursework",
-            fromfile_prefix_chars='@',
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            )
 
-        # verbose output
-        self.add_argument("--verbose",
-          action='store_true'
-        )
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Testing script for HPC Stencil coursework",
+        fromfile_prefix_chars='@',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--verbose", action='store_true')
+    parser.add_argument("--tolerance", default=1, type=int,
+                        help="Absolute tolerance to match against reference results")
+    parser.add_argument("--ref-stencil-file", required=True,
+                        help="reference stencil.pgm results file")
+    parser.add_argument("--stencil-file", required=True,
+                        help="calculated stencil.pgm results file")
+    return parser.parse_args()
 
-        # % tolerance
-        self.add_argument("--tolerance",
-            default=1,
-            type=int,
-            help="""Absolute tolerance to match against reference results""")
 
-        # Reference results
-        self.add_argument("--ref-stencil-file",
-            required=True,
-            help="""reference stencil.pgm results file""")
+def read_pgm(path):
+    with open(path, "rb") as f:
+        header = f.readline().split()
+        data = bytearray(f.read())
+    return [h.decode() for h in header], data
 
-        # Calculated results
-        self.add_argument("--stencil-file",
-            required=True,
-            help="""calculated stencil.pgm results file""")
 
-parser = InputParser()
-parsed_args = parser.parse_args()
+def main():
+    args = parse_args()
+    (ref_format, ref_nx, ref_ny, ref_depth), ref = read_pgm(args.ref_stencil_file)
+    (fmt, nx, ny, depth), res = read_pgm(args.stencil_file)
 
-# Open reference and input files
-stencil_ref = open(parsed_args.ref_stencil_file, "rb")
-stencil_res = open(parsed_args.stencil_file, "rb")
+    if not (fmt == ref_format == "P5"):
+        print("Error: incorrect file format"); sys.exit(1)
+    if not (depth == ref_depth == "255"):
+        print("Error: incorrect depth value"); sys.exit(1)
+    if not (nx == ref_nx and ny == ref_ny):
+        print("Error: image sizes do not match"); sys.exit(1)
 
-# Check image header
-ref_format, ref_nx, ref_ny, ref_depth = stencil_ref.readline().split()
-format, nx, ny, depth = stencil_res.readline().split()
-if not (format == ref_format == "P5"): print "Error: incorrect file format"; sys.exit()
-if not (depth == ref_depth == "255"): print "Error: incorrect depth value"; sys.exit()
-if not (nx == ref_nx and ny == ref_ny): print "Error: image sizes do not match"; sys.exit()
+    nx, ny = int(nx), int(ny)
+    if len(ref) < nx * ny or len(res) < nx * ny:
+        print("Error: truncated image data"); sys.exit(1)
 
-# Compare images
-passed = True
-for j in range(int(ref_ny)):
-    for i in range(int(ref_nx)):
-        ref_val = ord(stencil_ref.read(1))
-        val = ord(stencil_res.read(1))
-        if abs(ref_val - val) > parsed_args.tolerance:
-            passed = False
-            if (parsed_args.verbose):
-                print "Values differ at ("+str(i)+", "+str(j)+"): ref="+str(ref_val)+", res="+str(val)
+    passed = True
+    max_diff = 0
+    for j in range(ny):
+        row = j * nx
+        for i in range(nx):
+            diff = abs(ref[row + i] - res[row + i])
+            if diff > max_diff:
+                max_diff = diff
+            if diff > args.tolerance:
+                passed = False
+                if args.verbose:
+                    print("Values differ at (%d, %d): ref=%d, res=%d"
+                          % (i, j, ref[row + i], res[row + i]))
 
-# Print summary
-print 80*"-"
-if passed:
-    print "Comparison passed: images match with tolerance +/- "+str(parsed_args.tolerance)
-else:
-    print "Comparison failed"
-print 80*"-"
+    print(80 * "-")
+    if passed:
+        print("Comparison passed: images match with tolerance +/- %d (max diff %d)"
+              % (args.tolerance, max_diff))
+    else:
+        print("Comparison failed (max diff %d)" % max_diff)
+    print(80 * "-")
+    sys.exit(0 if passed else 1)
+
+
+if __name__ == "__main__":
+    main()

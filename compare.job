@@ -1,0 +1,68 @@
+#!/bin/bash
+# Comparatif complet : code d'origine vs version optimisée, sur les 3 tailles.
+# Soumission :   sbatch compare.job          (résultats dans compare.out)
+# Les 3 exécutions du code d'origine (1 cœur chacune) tournent en parallèle,
+# chacune dans son dossier, pendant que le nœud est réservé en exclusif ; la
+# version optimisée est mesurée ensuite seule sur tout le nœud.
+
+#SBATCH --nodes 1
+#SBATCH --ntasks-per-node 1
+#SBATCH --job-name stencil-compare
+#SBATCH --time 01:00:00
+#SBATCH --output compare.out
+#SBATCH --exclusive
+#SBATCH --mem 64G
+#SBATCH --partition instant
+#SBATCH --account r250127
+#SBATCH --constraint x64cpu
+
+. /apps/2025/manual_install/spack-x64cpu-1.0.x/share/spack/setup-env.sh
+spack load gcc@14.2.0
+
+set -e
+echo "Running on host $(hostname) - $(date)"
+lscpu | grep -E "Model name|^CPU\(s\)|Socket|NUMA node\(s\)" || true
+echo
+
+make clean >/dev/null
+make stencil original
+NCPUS=${SLURM_CPUS_ON_NODE:-$(nproc)}
+SIZES="1024 4096 8000"
+
+# 1) Code d'origine (compilé comme dans le Makefile initial : gcc -std=c99)
+core=0
+for size in $SIZES; do
+  mkdir -p run_orig_$size
+  # un cœur distinct (et un nœud NUMA distinct) pour chaque exécution
+  (cd run_orig_$size && OMP_NUM_THREADS=1 taskset -c $core \
+     ../stencil_original $size $size 100 > time.txt) &
+  core=$((core + NCPUS / 4))
+done
+wait
+for size in $SIZES; do
+  echo "original $size: $(awk '/runtime/ {print $2}' run_orig_$size/time.txt) s"
+  python3 check.py --ref-stencil-file stencil_${size}_${size}_100.pgm \
+                   --stencil-file run_orig_$size/stencil.pgm | sed -n 2p
+done
+echo
+
+# 2) Version optimisée, tous les cœurs (meilleur de 5 exécutions)
+export OMP_NUM_THREADS=$NCPUS OMP_PROC_BIND=close OMP_PLACES=cores
+for size in $SIZES; do
+  for k in 1 2 3 4 5; do
+    ./stencil $size $size 100 2>run_orig_$size/cfg.txt | awk '/runtime/ {print $2}'
+  done | sort -g | head -1 > run_orig_$size/best.txt
+  echo "optimise $size: $(cat run_orig_$size/best.txt) s ($(cat run_orig_$size/cfg.txt))"
+  python3 check.py --ref-stencil-file stencil_${size}_${size}_100.pgm \
+                   --stencil-file stencil.pgm | sed -n 2p
+done
+echo
+
+# 3) Tableau récapitulatif
+echo "| Taille | Original, 1 cœur (s) | Optimisé, $NCPUS threads (s) | Accélération |"
+echo "|---|---:|---:|---:|"
+for size in $SIZES; do
+  o=$(awk '/runtime/ {print $2}' run_orig_$size/time.txt)
+  p=$(cat run_orig_$size/best.txt)
+  awk -v s=$size -v o=$o -v p=$p 'BEGIN { printf "| %sx%sx100 | %.3f | %.4f | x%.0f |\n", s, s, o, p, o / p }'
+done
