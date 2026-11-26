@@ -85,6 +85,37 @@ même avec 192 threads. Avec l'ancien découpage en colonnes seulement, il
 fallait descendre à T = 5 : sur 8000², le temps est passé de 0,040 s avec le
 découpage 1D à environ 0,030 s.
 
+## Résultats sur un PC portable (AMD Ryzen 9 6900HX, 8 cœurs / 16 threads)
+
+WSL2 Ubuntu, gcc 15.2.0. Le PC était sur batterie, en mode « Équilibré »,
+donc les temps sur secteur devraient être un peu meilleurs. La version
+optimisée tourne avec `OMP_NUM_THREADS=8`, `OMP_PROC_BIND=close` et
+`OMP_PLACES=cores`, et l'on garde le meilleur temps de 5 exécutions.
+
+| Problème          | Original, 1 cœur | Optimisé, 8 threads | Accélération | check.py |
+| ----------------- | ---------------: | ------------------: | -----------: | -------- |
+| 1024 × 1024 × 100 |          8,307 s |             0,019 s |       × 444  | OK |
+| 4096 × 4096 × 100 |        220,283 s |             0,259 s |       × 849  | OK |
+| 8000 × 8000 × 100 |        392,039 s |             0,947 s |       × 414  | OK |
+
+Passage à l'échelle sur 8000 × 8000 × 100, meilleur de 3 :
+
+| threads (découpage) | Temps (s) | Accélération |
+| ------------------: | --------: | -----------: |
+| 1 (1×1)             | 4,471 | × 1,0 |
+| 2 (1×2)             | 2,613 | × 1,7 |
+| 4 (2×2)             | 1,590 | × 2,8 |
+| 8 (2×4)             | 0,979 | × 4,6 |
+| 16, SMT (4×4)       | 0,698 | × 6,4 |
+
+Sur un seul cœur, la version optimisée est déjà 88 fois plus rapide que
+l'original (4,47 s contre 392 s) : l'essentiel du gain vient du code
+lui-même. Sur 8 cœurs, la parallélisation est moins efficace (environ 57 %)
+qu'à petit nombre de threads sur ROMEO. C'est probablement la bande passante
+mémoire du portable, sur deux canaux, qui limite, d'autant plus sur batterie.
+L'hyperthreading (16 threads) apporte encore environ 30 %, ce qui donne le
+meilleur temps du PC : 0,70 s sur 8000², soit × 560 par rapport à l'original.
+
 ## Optimisations appliquées
 
 1. **Accès mémoire contigus.** Le tableau est stocké `image[j + i*height]`,
