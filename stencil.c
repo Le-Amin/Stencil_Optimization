@@ -38,6 +38,9 @@
 #include <string.h>
 #include <sys/time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <malloc.h>
+#endif
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -60,6 +63,7 @@ typedef float real;
 #define DEFAULT_L2 (512 * 1024)
 
 static void* xalloc(size_t bytes);
+static void xfree(void* p);
 static long env_long(const char* name, long def);
 static void init_image(const int nx, const int ny, const int height,
                        real* image, real* tmp_image);
@@ -180,8 +184,8 @@ int main(int argc, char* argv[])
           px, py, T, bj, sizeof(real) == 4 ? "float" : "double");
 
   output_image(OUTPUT_FILE, nx, ny, height, image);
-  free(image);
-  free(tmp_image);
+  xfree(image);
+  xfree(tmp_image);
   return EXIT_SUCCESS;
 }
 
@@ -189,11 +193,25 @@ static void* xalloc(size_t bytes)
 {
   void* p = NULL;
   bytes = ((bytes + ALIGN - 1) / ALIGN) * ALIGN;
+#ifdef _WIN32
+  p = _aligned_malloc(bytes, ALIGN); // MinGW / MSVC : pas de posix_memalign
+  if (!p) {
+#else
   if (posix_memalign(&p, ALIGN, bytes) != 0) {
+#endif
     fprintf(stderr, "Error: could not allocate %zu bytes\n", bytes);
     exit(EXIT_FAILURE);
   }
   return p;
+}
+
+static void xfree(void* p)
+{
+#ifdef _WIN32
+  _aligned_free(p);
+#else
+  free(p);
+#endif
 }
 
 static long env_long(const char* name, long def)
@@ -299,7 +317,7 @@ static void stencil_pass(const int nx, const int ny, const int height,
           }
         }
       }
-      free(ring);
+      xfree(ring);
     }
   }
 }
