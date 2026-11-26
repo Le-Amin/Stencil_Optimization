@@ -1,0 +1,21 @@
+#!/bin/bash
+
+#SBATCH --nodes 1
+#SBATCH --ntasks-per-node 1
+#SBATCH --job-name stencil
+#SBATCH --time 00:15:00
+#SBATCH --output stencil.out
+#SBATCH --exclusive
+
+# Print some information about the job
+echo "Running on host $(hostname)"
+echo "Time is $(date)"
+echo "Directory is $(pwd)"
+echo "Slurm job ID is $SLURM_JOB_ID"
+echo
+echo "This job runs on the following machines:"
+echo "$SLURM_JOB_NODELIST" | uniq
+echo
+
+# Run the executable
+srun ./stencil 1024 1024 100
