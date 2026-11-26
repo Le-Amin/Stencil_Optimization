@@ -6,3 +6,4 @@ st512
 stencil.pgm
 *.out
 *.o
+run_orig_*/

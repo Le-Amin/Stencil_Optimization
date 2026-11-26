@@ -27,13 +27,13 @@ export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 SIZE=${SIZE:-8000}
 
-echo "threads,T,runtime_s (${SIZE}x${SIZE}x100)"
-t=1
-while [ $t -le $NCPUS ]; do
-  for T in 16 32 64; do
-    r=$(OMP_NUM_THREADS=$t STENCIL_T=$T \
-          ./stencil $SIZE $SIZE 100 2>/dev/null | awk '/runtime/ {print $2}')
-    echo "$t,$T,$r"
+echo "threads,T,runtime_s (${SIZE}x${SIZE}x100, T=auto : réglage par défaut)"
+for t in 1 2 4 8 16 32 64 96 128 192 256 384; do
+  [ $t -gt $NCPUS ] && continue
+  for T in auto 16 32; do
+    if [ $T = auto ]; then unset STENCIL_T; else export STENCIL_T=$T; fi
+    r=$(OMP_NUM_THREADS=$t ./stencil $SIZE $SIZE 100 2>cfg.txt | awk '/runtime/ {print $2}')
+    echo "$t,$T,$r,$(cat cfg.txt)"
   done
-  if [ $t -lt $NCPUS ] && [ $((t * 2)) -gt $NCPUS ]; then t=$NCPUS; else t=$((t * 2)); fi
 done
+rm -f cfg.txt

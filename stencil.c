@@ -17,8 +17,9 @@
  *  6. Blocage spatial en j : les colonnes sont découpées en bandes de BJ
  *     lignes (avec un halo recalculé de T lignes) pour que l'anneau tienne
  *     dans le cache L2, quelle que soit la taille du problème.
- *  7. Parallélisation OpenMP : chaque thread traite un bloc de colonnes ;
- *     les colonnes de bord des blocs sont recalculées de façon redondante,
+ *  7. Parallélisation OpenMP : la grille est découpée en px x py blocs
+ *     (colonnes x lignes, blocs les plus carrés possible), un par thread ;
+ *     les bords des blocs sont recalculés de façon redondante,
  *     donc aucune synchronisation n'est nécessaire au sein d'un passage.
  *     Initialisation parallèle (« first touch ») pour le placement NUMA.
  *
@@ -28,6 +29,7 @@
  *   STENCIL_T        balayages fusionnés par passage (défaut 32, 1 = aucun)
  *   STENCIL_BJ       hauteur des bandes en j (défaut : calculée d'après le L2)
  *   STENCIL_L2       taille du cache L2 en octets (si la détection échoue)
+ *   STENCIL_PX       nombre de blocs de colonnes (défaut : automatique)
  */
 #define _POSIX_C_SOURCE 200112L
 #define _DEFAULT_SOURCE
@@ -62,7 +64,8 @@ static long env_long(const char* name, long def);
 static void init_image(const int nx, const int ny, const int height,
                        real* image, real* tmp_image);
 static void stencil_pass(const int nx, const int ny, const int height,
-                         const int T, const int bj, const real* restrict src,
+                         const int T, const int bj, const int px,
+                         const int py, const real* restrict src,
                          real* restrict dst);
 static void output_image(const char* file_name, const int nx, const int ny,
                          const int height, const real* image);
@@ -91,13 +94,37 @@ int main(int argc, char* argv[])
   const int nthreads = 1;
 #endif
 
-  // Temporal blocking depth. Each thread recomputes about T columns on each
-  // side of its block, so T is capped to keep that overhead small.
+  // 2D split of the grid between threads: px blocks of columns times py
+  // blocks of rows (px * py = nthreads). The most square blocks are chosen,
+  // because the redundant halo work grows with the block perimeter.
+  int px = nthreads, py = 1;
+  {
+    double best = -1.0;
+    for (int p = 1; p <= nthreads; ++p) {
+      if (nthreads % p) continue;
+      const double w = (double)nx / p, h = (double)ny / (nthreads / p);
+      const double cost = 1.0 / w + 1.0 / h;
+      if (best < 0 || cost < best) {
+        best = cost;
+        px = p;
+      }
+    }
+    py = nthreads / px;
+  }
+  const long px_env = env_long("STENCIL_PX", 0);
+  if (px_env > 0 && nthreads % px_env == 0) {
+    px = (int)px_env;
+    py = nthreads / px;
+  }
+
+  // Temporal blocking depth. Each thread recomputes about T columns/rows on
+  // each side of its block, so T is capped to keep that overhead small.
   int T = (int)env_long("STENCIL_T", DEFAULT_T);
   if (T < 1) T = 1;
   if (!getenv("STENCIL_T")) {
-    const int width = nx / nthreads;
-    const int cap = width / 8 > 1 ? width / 8 : 1;
+    const int w = nx / px, h = ny / py;
+    const int m = w < h ? w : h;
+    const int cap = m / 8 > 1 ? m / 8 : 1;
     if (T > cap) T = cap;
   }
 
@@ -137,7 +164,7 @@ int main(int argc, char* argv[])
   double tic = wtime();
   for (long done = 0; done < nsweeps;) {
     const int t = (nsweeps - done < T) ? (int)(nsweeps - done) : T;
-    stencil_pass(nx, ny, height, t, (int)bj, image, tmp_image);
+    stencil_pass(nx, ny, height, t, (int)bj, px, py, image, tmp_image);
     real* swap = image;
     image = tmp_image;
     tmp_image = swap;
@@ -149,8 +176,8 @@ int main(int argc, char* argv[])
   printf("------------------------------------\n");
   printf(" runtime: %lf s\n", toc - tic);
   printf("------------------------------------\n");
-  fprintf(stderr, " threads=%d T=%d BJ=%ld precision=%s\n", nthreads, T, bj,
-          sizeof(real) == 4 ? "float" : "double");
+  fprintf(stderr, " threads=%d (%dx%d) T=%d BJ=%ld precision=%s\n", nthreads,
+          px, py, T, bj, sizeof(real) == 4 ? "float" : "double");
 
   output_image(OUTPUT_FILE, nx, ny, height, image);
   free(image);
@@ -189,7 +216,8 @@ static inline void stencil_column(const int n, const real* restrict l,
 
 // Apply T consecutive stencil sweeps: dst = S^T(src).
 //
-// Each thread owns the columns [a, b). For each strip of rows [j0, j1) it runs
+// Each thread owns the columns [a, b) and the rows [ya, yb) of a px x py split
+// of the grid. For each strip of rows [j0, j1) of its block, it runs
 // a wavefront over the columns: at step x, level lev (1..T) computes column
 // x - (lev - 1) from three columns of level lev - 1. Level 0 is src, level T
 // is dst, levels 1..T-1 live in a private ring of 3 columns per level. Level
@@ -197,7 +225,8 @@ static inline void stencil_column(const int n, const real* restrict l,
 // [j0 - (T - lev), j1 - 1 + (T - lev)], clipped to the domain: everything
 // outside the domain is zero, as in the original code.
 static void stencil_pass(const int nx, const int ny, const int height,
-                         const int T, const int bj, const real* restrict src,
+                         const int T, const int bj, const int px,
+                         const int py, const real* restrict src,
                          real* restrict dst)
 {
 #pragma omp parallel
@@ -209,13 +238,19 @@ static void stencil_pass(const int nx, const int ny, const int height,
     const int nth = 1;
     const int tid = 0;
 #endif
-    const int a = (int)((long)nx * tid / nth);
-    const int b = (int)((long)nx * (tid + 1) / nth);
+    // Fall back to a 1D split if the team size is not px * py.
+    const int qx = (px * py == nth) ? px : nth;
+    const int qy = (px * py == nth) ? py : 1;
+    const int tx = tid / qy, ty = tid % qy;
+    const int a = (int)((long)nx * tx / qx);
+    const int b = (int)((long)nx * (tx + 1) / qx);
+    const int ya = (int)((long)ny * ty / qy);
+    const int yb = (int)((long)ny * (ty + 1) / qy);
 
-    if (a < b) {
+    if (a < b && ya < yb) {
       // Ring column index k stores the absolute row ring_base + k.
       const int nlev = T - 1;
-      const int hs_raw = (bj < ny ? bj : ny) + 2 * T + 2;
+      const int hs_raw = (bj < yb - ya ? bj : yb - ya) + 2 * T + 2;
       const int per_line = ALIGN / (int)sizeof(real);
       const size_t hs =
           (size_t)(((hs_raw + per_line - 1) / per_line) * per_line);
@@ -225,8 +260,8 @@ static void stencil_pass(const int nx, const int ny, const int height,
       const real* zero_l = src;
       const real* zero_r = src + (size_t)(nx + 1) * height;
 
-      for (int j0 = 0; j0 < ny; j0 += bj) {
-        const int j1 = (j0 + bj < ny) ? j0 + bj : ny;
+      for (int j0 = ya; j0 < yb; j0 += bj) {
+        const int j1 = (j0 + bj < yb) ? j0 + bj : yb;
         const int ring_base = j0 - T - 1;
         if (nlev > 0) memset(ring, 0, sizeof(real) * ring_len);
 

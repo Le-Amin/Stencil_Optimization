@@ -51,5 +51,6 @@ bench: stencil original
 
 clean:
 	rm -f stencil stencil_double stencil_serial stencil_original stencil.pgm
+	rm -rf run_orig_*
 
 .PHONY: all double serial original check bench clean
