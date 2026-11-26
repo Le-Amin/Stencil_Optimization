@@ -1,13 +1,25 @@
 #!/bin/bash
+# Benchmark du stencil optimisé sur ROMEO (1 nœud complet, OpenMP).
+#
+# Soumission :   sbatch stencil.job
+# À adapter si besoin : partition / compte / modules (voir la doc ROMEO).
 
 #SBATCH --nodes 1
 #SBATCH --ntasks-per-node 1
 #SBATCH --job-name stencil
-#SBATCH --time 00:15:00
+#SBATCH --time 00:30:00
 #SBATCH --output stencil.out
 #SBATCH --exclusive
+##SBATCH --partition <partition>
+##SBATCH --account <projet>
+##SBATCH --constraint <x64cpu|armgpu ...>
 
-# Print some information about the job
+# module purge
+# module load gcc          # compilateur récent avec OpenMP
+# module load python       # python3 pour check.py
+
+set -e
+
 echo "Running on host $(hostname)"
 echo "Time is $(date)"
 echo "Directory is $(pwd)"
@@ -16,6 +28,32 @@ echo
 echo "This job runs on the following machines:"
 echo "$SLURM_JOB_NODELIST" | uniq
 echo
+lscpu | grep -E "Model name|^CPU\(s\)|Socket|NUMA node\(s\)|L2|L3" || true
+echo
 
-# Run the executable
-srun ./stencil 1024 1024 100
+# Compilation sur le nœud de calcul (pour que -march=native cible ce CPU)
+make clean >/dev/null
+make stencil original
+
+# Un thread par cœur physique, threads fixés et rapprochés
+NCPUS=${SLURM_CPUS_ON_NODE:-$(nproc)}
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-$NCPUS}
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+echo "OMP_NUM_THREADS=$OMP_NUM_THREADS"
+echo
+
+# Exécution directe sur le nœud alloué (1 seul processus, pas besoin de srun)
+RUN=""
+
+for size in 1024 4096 8000; do
+  echo "=== ${size}x${size}, 100 itérations ==="
+  $RUN ./stencil $size $size 100
+  python3 check.py --ref-stencil-file stencil_${size}_${size}_100.pgm \
+                   --stencil-file stencil.pgm
+  echo
+done
+
+# Référence : code d'origine (1 cœur) sur le petit problème seulement
+echo "=== Code d'origine, 1024x1024, 100 itérations ==="
+$RUN ./stencil_original 1024 1024 100
